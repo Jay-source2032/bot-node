@@ -2,7 +2,6 @@
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const fs = require('fs');
-const multer = require('multer');
 
 // ===== CONFIG =====
 const TOKEN = process.env.BOT_TOKEN;
@@ -38,12 +37,8 @@ function getExpire(plan) {
   return now.toISOString();
 }
 
-// ===== UPLOAD CONFIG =====
-const upload = multer({ dest: 'uploads/' });
-
 // ===== WEBHOOK SETUP =====
 bot.setWebHook(`${process.env.RENDER_EXTERNAL_URL}/${TOKEN}`);
-
 app.post(`/${TOKEN}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
@@ -64,13 +59,10 @@ bot.onText(/\/start (.+)/, (msg, match) => {
   users[userId].pendingPlan = plan;
   users[userId].telegram = telegram;
   users[userId].name = name;
+  users[userId].orderId = Math.floor(Math.random() * 1000000);
   saveUsers(users);
 
-  // ===== MENSAGEM PARA ADMIN =====
-  const orderId = Math.floor(Math.random() * 1000000);
-  users[userId].orderId = orderId;
-  saveUsers(users);
-
+  // ===== MESSAGE TO ADMIN =====
   const opts = {
     reply_markup: {
       inline_keyboard: [
@@ -84,17 +76,26 @@ bot.onText(/\/start (.+)/, (msg, match) => {
 
   bot.sendMessage(
     ADMIN_ID,
-    `🆕 New order processed\nPlan: ${plan.toUpperCase()}\nUsername: ${telegram}\nOrder ID: ${orderId}`,
+    `🆕 New order processed\nPlan: ${plan.toUpperCase()}\nUsername: @${telegram}\nOrder ID: ${users[userId].orderId}`,
     opts
   );
 
-  // ===== MENSAGEM PARA CLIENTE =====
+  // ===== MESSAGE TO USER =====
   let price = plan === 'basic' ? 65 : plan === 'premium' ? 120 : 200;
   let days = plan === 'basic' ? 7 : plan === 'premium' ? 30 : 'lifetime';
 
   bot.sendMessage(
     userId,
-    `✅ Order received!\nPlan: ${plan.toUpperCase()}\nDuration: ${days} days\nPrice: $${price}\nYou will be notified near the end of your subscription. The VIP link will arrive in 1 minute.`
+    `✅ Order received!\nPlan: ${plan.toUpperCase()}\nDuration: ${days} days\nPrice: $${price}\n\n📎 Click the button below to upload your payment proof and get the VIP link.`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "Upload Payment Proof", callback_data: `upload_${userId}` }
+          ]
+        ]
+      }
+    }
   );
 });
 
@@ -104,7 +105,6 @@ bot.on('callback_query', async query => {
   const userId = parseInt(data.split('_')[1]);
   const users = loadUsers();
   const user = users[userId];
-
   if(!user) return bot.answerCallbackQuery(query.id, { text: "User not found" });
 
   if(data.startsWith('approve')) {
@@ -124,10 +124,14 @@ bot.on('callback_query', async query => {
     delete user.pendingPlan;
     saveUsers(users);
     bot.answerCallbackQuery(query.id, { text: "Rejected" });
+
+  } else if(data.startsWith('upload')) {
+    bot.sendMessage(userId, `📷 Please send a screenshot of your payment. Admin will verify it and send the VIP link.`);
+    bot.answerCallbackQuery(query.id, { text: "Ready to upload" });
   }
 });
 
-// ===== UPLOAD DE COMPROVANTE =====
+// ===== RECEIVE PAYMENT PROOF =====
 bot.on('message', msg => {
   const userId = msg.chat.id;
   const users = loadUsers();
@@ -136,20 +140,17 @@ bot.on('message', msg => {
   if(msg.photo) {
     const fileId = msg.photo[msg.photo.length-1].file_id;
     bot.getFileLink(fileId).then(link => {
-      if(!users[userId].proofs) users[userId].proofs = [];
-      users[userId].proofs.push(link);
-      saveUsers(users);
-
-      bot.sendMessage(userId, `📎 Screenshot received! Admin will verify and approve your order soon.`);
-      bot.sendMessage(ADMIN_ID, `📸 Payment screenshot from ${users[userId].telegram}\nOrder ID: ${users[userId].orderId}\nLink: ${link}`);
+      // Send directly to admin
+      bot.sendMessage(ADMIN_ID, `📸 Payment screenshot from @${users[userId].telegram}\nOrder ID: ${users[userId].orderId}\nPlan: ${users[userId].pendingPlan.toUpperCase()}\nLink: ${link}`);
+      bot.sendMessage(userId, `✅ Screenshot received! Admin will verify your payment soon.`);
     });
   }
 });
 
 // ===== STATS =====
+const cron = require('node-cron');
 bot.onText(/\/stats/, msg => {
   if(msg.chat.id != ADMIN_ID) return;
-
   const users = loadUsers();
   let basic=0, premium=0, elite=0;
   Object.values(users).forEach(u=>{
@@ -157,12 +158,10 @@ bot.onText(/\/stats/, msg => {
     if(u.plan==='premium') premium++;
     if(u.plan==='elite') elite++;
   });
-
   bot.sendMessage(ADMIN_ID, `📊 Subscribers:\nBasic: ${basic}\nPremium: ${premium}\nElite: ${elite}`);
 });
 
 // ===== DAILY REMINDERS =====
-const cron = require('node-cron');
 cron.schedule('0 12 * * *', () => {
   const users = loadUsers();
   const now = new Date();

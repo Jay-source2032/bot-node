@@ -1,197 +1,174 @@
-// bot.js
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const cron = require('node-cron');
 const express = require('express');
 const multer = require('multer');
-const path = require('path');
 
 // ===== CONFIG =====
 const TOKEN = '8534659329:AAEF5wNyWPs9PVh3s5B00MqW_jl3pDo2Lb8'; // Coloque seu token
 const ADMIN_ID = 8320256438; // Seu Telegram ID
 const VIP_LINK = 'https://t.me/+me0ODDBwdas4NmU1';
 const USERS_FILE = './users.json';
-const UPLOAD_DIR = './uploads';
-
-// Cria a pasta de uploads se não existir
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 // ===== INIT BOT =====
 const bot = new TelegramBot(TOKEN, { polling: true });
 console.log('Bot running...');
 
-// ===== EXPRESS SETUP =====
-const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// Configuração multer
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e6);
-    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-  }
-});
-const upload = multer({ storage });
-
 // ===== HELPERS =====
 function loadUsers() {
-  if (!fs.existsSync(USERS_FILE)) return {};
-  return JSON.parse(fs.readFileSync(USERS_FILE));
+    if (!fs.existsSync(USERS_FILE)) return {};
+    return JSON.parse(fs.readFileSync(USERS_FILE));
 }
 
 function saveUsers(data) {
-  fs.writeFileSync(USERS_FILE, JSON.stringify(data, null, 2));
+    fs.writeFileSync(USERS_FILE, JSON.stringify(data, null, 2));
 }
 
 function getExpire(plan) {
-  const now = new Date();
-  if (plan === 'basic') now.setDate(now.getDate() + 7);
-  if (plan === 'premium') now.setDate(now.getDate() + 30);
-  if (plan === 'elite') return 'lifetime';
-  return now.toISOString();
+    const now = new Date();
+    if(plan === 'basic') now.setDate(now.getDate()+7);
+    if(plan === 'premium') now.setDate(now.getDate()+30);
+    if(plan === 'elite') return 'lifetime';
+    return now.toISOString();
 }
 
-// ===== RECEBENDO CLIENTE DO SITE =====
-// Recebe POST do confirm.html
-app.post('/submit', upload.single('proof'), (req, res) => {
-  const { telegram, planName, notes } = req.body;
-  const file = req.file;
+// ===== RECEBENDO CLIENTE DO SITE (/start do bot antigo) =====
+bot.onText(/\/start (.+)/, (msg, match) => {
+    const payload = match[1];             // ex: "PREMIUM_username"
+    const [plan, telegram] = payload.split("_");
+    const userId = msg.chat.id;
+    const name = msg.from.first_name;
 
-  if (!telegram || !planName || !file) {
-    return res.status(400).json({ error: 'Missing fields' });
-  }
+    const users = loadUsers();
+    if(!users[userId]) users[userId] = {};
 
-  const payload = `${planName}_${telegram.replace('@','')}`;
+    users[userId].pendingPlan = plan.toLowerCase();
+    users[userId].telegram = telegram;
 
-  // Envia para o bot como se fosse o /start
-  const fakeMsg = { chat: { id: telegram }, from: { first_name: telegram } };
-  const match = [null, payload];
+    saveUsers(users);
 
-  // Aqui podemos usar a mesma função do /start
-  startHandler(fakeMsg, match);
+    const opts = {
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    { text: "Approve", callback_data: `approve_${userId}` },
+                    { text: "Reject", callback_data: `reject_${userId}` }
+                ]
+            ]
+        }
+    };
 
-  // Responde ao site
-  res.json({ success: true, message: 'Payment submitted! Open your Telegram bot.' });
+    bot.sendMessage(
+        ADMIN_ID,
+        `🆕 New customer\nName: ${name}\nID: ${userId}\nPlan: ${plan}\nTelegram: ${telegram}`,
+        opts
+    );
 
-  // Opcional: envia o arquivo para o admin
-  bot.sendDocument(ADMIN_ID, file.path, { caption: `Payment proof from ${telegram}, plan: ${planName}\nNotes: ${notes || 'None'}` });
+    bot.sendMessage(userId, "✅ Request received. Waiting for admin approval.");
 });
-
-// ===== HANDLER /start =====
-function startHandler(msg, match) {
-  const payload = match[1]; // ex: "PREMIUM_username"
-  const [plan, telegram] = payload.split("_");
-  const userId = msg.chat.id;
-  const name = msg.from.first_name;
-
-  const users = loadUsers();
-  if (!users[userId]) users[userId] = {};
-
-  users[userId].pendingPlan = plan.toLowerCase();
-  users[userId].telegram = telegram;
-
-  saveUsers(users);
-
-  const opts = {
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: "Approve", callback_data: `approve_${userId}` },
-          { text: "Reject", callback_data: `reject_${userId}` }
-        ]
-      ]
-    }
-  };
-
-  bot.sendMessage(
-    ADMIN_ID,
-    `🆕 New customer\nName: ${name}\nID: ${userId}\nPlan: ${plan}\nTelegram: ${telegram}`,
-    opts
-  );
-
-  bot.sendMessage(userId, "✅ Request received. Waiting for admin approval.");
-}
-
-bot.onText(/\/start (.+)/, startHandler);
 
 // ===== APPROVE / REJECT =====
 bot.on('callback_query', query => {
-  const data = query.data;
-  const userId = parseInt(data.split('_')[1]);
+    const data = query.data;
+    const userId = parseInt(data.split('_')[1]);
 
-  const users = loadUsers();
-  if (!users[userId]) users[userId] = {};
+    const users = loadUsers();
+    if(!users[userId]) users[userId] = {};
 
-  if (data.startsWith('approve')) {
-    const plan = users[userId].pendingPlan || 'basic';
-    const expire = getExpire(plan);
+    if(data.startsWith('approve')) {
+        const plan = users[userId].pendingPlan || 'basic';
+        const expire = getExpire(plan);
 
-    users[userId].plan = plan;
-    users[userId].expires = expire;
-    delete users[userId].pendingPlan;
+        users[userId].plan = plan;
+        users[userId].expires = expire;
+        delete users[userId].pendingPlan;
 
-    saveUsers(users);
+        saveUsers(users);
 
-    bot.sendMessage(userId, `🎉 Payment confirmed!\nPlan: ${plan.toUpperCase()}\n\nJoin VIP here:\n${VIP_LINK}`);
-    bot.answerCallbackQuery(query.id, { text: "Approved" });
+        bot.sendMessage(userId, `🎉 Payment confirmed!\nPlan: ${plan.toUpperCase()}\n\nJoin VIP here:\n${VIP_LINK}`);
+        bot.answerCallbackQuery(query.id, { text: "Approved" });
 
-  } else if (data.startsWith('reject')) {
-    bot.sendMessage(userId, "❌ Payment not confirmed.");
-    delete users[userId].pendingPlan;
-    saveUsers(users);
-    bot.answerCallbackQuery(query.id, { text: "Rejected" });
-  }
+    } else if(data.startsWith('reject')) {
+        bot.sendMessage(userId, "❌ Payment not confirmed.");
+        delete users[userId].pendingPlan;
+        saveUsers(users);
+        bot.answerCallbackQuery(query.id, { text: "Rejected" });
+    }
 });
 
 // ===== STATS =====
 bot.onText(/\/stats/, msg => {
-  if (msg.chat.id !== ADMIN_ID) return;
+    if(msg.chat.id !== ADMIN_ID) return;
 
-  const users = loadUsers();
-  let basic = 0, premium = 0, elite = 0;
+    const users = loadUsers();
+    let basic=0, premium=0, elite=0;
 
-  Object.values(users).forEach(u => {
-    if (u.plan === 'basic') basic++;
-    if (u.plan === 'premium') premium++;
-    if (u.plan === 'elite') elite++;
-  });
+    Object.values(users).forEach(u=>{
+        if(u.plan==='basic') basic++;
+        if(u.plan==='premium') premium++;
+        if(u.plan==='elite') elite++;
+    });
 
-  bot.sendMessage(ADMIN_ID, `📊 Subscribers:\nBasic: ${basic}\nPremium: ${premium}\nElite: ${elite}`);
+    bot.sendMessage(ADMIN_ID, `📊 Subscribers:\nBasic: ${basic}\nPremium: ${premium}\nElite: ${elite}`);
 });
 
 // ===== LEMBRETES DIÁRIOS =====
 cron.schedule('0 12 * * *', () => {
-  const users = loadUsers();
-  const now = new Date();
+    const users = loadUsers();
+    const now = new Date();
 
-  Object.keys(users).forEach(id => {
-    const user = users[id];
+    Object.keys(users).forEach(id=>{
+        const user = users[id];
 
-    if (user.expires && user.expires !== 'lifetime') {
-      const exp = new Date(user.expires);
-      const diff = (exp - now) / (1000 * 60 * 60 * 24);
+        if(user.expires && user.expires!=='lifetime') {
+            const exp = new Date(user.expires);
+            const diff = (exp-now)/(1000*60*60*24);
 
-      if (diff <= 2 && diff > 1) {
-        bot.sendMessage(id, "⚠️ Your subscription expires soon.");
-      }
+            if(diff <= 2 && diff > 1) {
+                bot.sendMessage(id, "⚠️ Your subscription expires soon.");
+            }
 
-      if (diff <= 0) {
-        bot.sendMessage(id, "⏰ Your subscription expired. Please renew.");
-        delete users[id].plan;
-        delete users[id].expires;
-      }
+            if(diff <= 0) {
+                bot.sendMessage(id, "⏰ Your subscription expired. Please renew.");
+                delete users[id].plan;
+                delete users[id].expires;
+            }
+        }
+    });
+
+    saveUsers(users);
+});
+
+// ===== EXPRESS PARA RECEBER FORMULÁRIO DO SITE =====
+const app = express();
+const upload = multer({ dest: 'uploads/' });
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+app.post('/payment', upload.single('proof'), async (req, res) => {
+    try {
+        const { telegram, plan, notes } = req.body;
+        const proofFile = req.file;
+
+        let message = `💳 New payment submission\nPlan: ${plan}\nTelegram: ${telegram}\nNotes: ${notes || 'N/A'}`;
+
+        if(proofFile){
+            await bot.sendDocument(ADMIN_ID, proofFile.path, {}, { caption: message });
+        } else {
+            await bot.sendMessage(ADMIN_ID, message);
+        }
+
+        res.status(200).send('OK');
+    } catch (err) {
+        console.error(err);
+        res.status(500).send('Error');
     }
-  });
-
-  saveUsers(users);
 });
 
-// ===== START EXPRESS SERVER =====
-app.get('/', (req, res) => {
-  res.send('Bot is running');
-});
+// ===== ROTA DE TESTE =====
+app.get('/', (req,res) => res.send('Bot running'));
 
+// ===== START SERVER =====
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Web server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Bot HTTP server running on port ${PORT}`));

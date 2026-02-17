@@ -79,12 +79,12 @@ bot.onText(/\/start (.+)/, (msg, match) => {
   let days = plan==='basic'?7:plan==='premium'?30:'lifetime';
 
   bot.sendMessage(ADMIN_ID,
-    `🆕 Order sent\nPlan: ${plan.toUpperCase()}\nUsername: @${telegram}\nOrder ID: ${orderId}\nPrice: $${price}\nDuration: ${days} days`
+    `🆕 Order received\nPlan: ${plan.toUpperCase()}\nUsername: @${telegram}\nOrder ID: ${orderId}\nPrice: $${price}\nDuration: ${days} days`
   );
 
   // ===== MESSAGE TO CLIENT =====
   bot.sendMessage(userId,
-    `✅ Order received!\nPlan: ${plan.toUpperCase()}\nDuration: ${days} days\nPrice: $${price}\n\n📌 Please upload your payment proof to get the VIP link.`
+    `✅ Order sent!\nPlan: ${plan.toUpperCase()}\nDuration: ${days} days\nPrice: $${price}\n\n📌 Please upload your payment proof to get the VIP link.`
   );
 });
 
@@ -191,3 +191,4 @@ cron.schedule('0 12 * * *', () => {
 // ===== START WEB SERVER =====
 app.get('/', (req,res)=>res.send('Bot is running'));
 app.listen(PORT, ()=>console.log('Web server running'));
+

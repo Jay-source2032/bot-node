@@ -30,40 +30,29 @@ function getExpire(plan) {
     return now.toISOString();
 }
 
-// ===== RECEBENDO CLIENTE DO SITE =====
-bot.onText(/\/start (.+)/, (msg, match) => {
-    const payload = match[1];             // ex: "PREMIUM_username"
-    const [plan, telegram] = payload.split("_");
+bot.onText(/\/start(?: (.+))?/, (msg, match) => {
     const userId = msg.chat.id;
     const name = msg.from.first_name;
+
+    const payload = match[1]; // pode ser undefined
+    const plan = payload ? payload.split("_")[0].toLowerCase() : "basic"; // default
+    const telegram = payload ? payload.split("_")[1] : "";
 
     const users = loadUsers();
     if(!users[userId]) users[userId] = {};
 
-    users[userId].pendingPlan = plan.toLowerCase();
+    users[userId].pendingPlan = plan;
     users[userId].telegram = telegram;
 
     saveUsers(users);
 
-    const opts = {
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    { text: "Approve", callback_data: `approve_${userId}` },
-                    { text: "Reject", callback_data: `reject_${userId}` }
-                ]
-            ]
-        }
-    };
+    // Enviar notificação para admin
+    bot.sendMessage(ADMIN_ID, `🆕 New customer\nName: ${name}\nID: ${userId}\nPlan: ${plan}\nTelegram: ${telegram}`);
 
-    bot.sendMessage(
-        ADMIN_ID,
-        `🆕 New customer\nName: ${name}\nID: ${userId}\nPlan: ${plan}\nTelegram: ${telegram}`,
-        opts
-    );
-
+    // Mensagem para o usuário
     bot.sendMessage(userId, "✅ Request received. Waiting for admin approval.");
 });
+
 
 // ===== APPROVE / REJECT =====
 bot.on('callback_query', query => {
@@ -146,5 +135,6 @@ app.get('/', (req, res) => {
 app.listen(3000, () => {
     console.log('Web server running');
 });
+
 
 

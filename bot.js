@@ -1,60 +1,163 @@
 const TelegramBot = require('node-telegram-bot-api');
+const fs = require('fs');
 const express = require('express');
 
 const TOKEN = process.env.BOT_TOKEN;
-const ADMIN_ID = process.env.ADMIN_ID;
+const ADMIN_ID = parseInt(process.env.ADMIN_ID);
+const VIP_LINK = process.env.VIP_LINK;
+
+const USERS_FILE = './users.json';
 
 const bot = new TelegramBot(TOKEN, { polling: true });
+console.log("Bot running...");
 
+// ===== EXPRESS (Render keep alive) =====
 const app = express();
-app.use(express.json());
+app.get("/", (req,res)=> res.send("Bot alive"));
+app.listen(3000);
 
-// Rota de teste (importante para Render)
-app.get("/", (req, res) => {
-    res.send("Bot está online!");
-});
+// ===== HELPERS =====
+function loadUsers(){
+    if(!fs.existsSync(USERS_FILE)) return {};
+    return JSON.parse(fs.readFileSync(USERS_FILE));
+}
 
-// Recebe /start com parâmetros
-bot.onText(/\/start(?: (.+))?/, (msg, match) => {
-    const chatId = msg.chat.id;
+function saveUsers(data){
+    fs.writeFileSync(USERS_FILE, JSON.stringify(data,null,2));
+}
 
-    // Se não vier parâmetro
-    if (!match[1]) {
-        bot.sendMessage(chatId, "Bem-vindo! Use o link de confirmação do site.");
-        return;
+function getPlanDetails(plan){
+    plan = plan.toLowerCase();
+
+    if(plan === "basic"){
+        return {days:7, price:65};
     }
-
-    const data = match[1];
-
-    let plan = "Desconhecido";
-    let username = "Não informado";
-
-    if (data.includes("_")) {
-        const parts = data.split("_");
-        plan = parts[0];
-        username = parts[1];
+    if(plan === "premium"){
+        return {days:30, price:120};
     }
+    if(plan === "elite"){
+        return {days:"Lifetime", price:250};
+    }
+    return {days:7, price:0};
+}
 
-    // Mensagem para o cliente
-    bot.sendMessage(chatId,
-`✅ Pedido recebido!
+function generateOrderId(){
+    return Math.floor(100000 + Math.random() * 900000);
+}
 
-Plano: ${plan}
-Usuário: @${username}
+function getExpireDate(plan){
+    const now = new Date();
+    if(plan === "basic") now.setDate(now.getDate()+7);
+    if(plan === "premium") now.setDate(now.getDate()+30);
+    if(plan === "elite") return "lifetime";
+    return now.toISOString();
+}
 
-Aguarde a confirmação do administrador.`);
+// ===== START WITH PLAN FROM SITE =====
+bot.onText(/\/start (.+)/, (msg, match)=>{
+    const payload = match[1]; // PLAN_username
+    const [planRaw, username] = payload.split("_");
 
-    // Notificação para o admin
+    const plan = planRaw.toLowerCase();
+    const userId = msg.chat.id;
+    const name = msg.from.first_name;
+
+    const orderId = generateOrderId();
+    const details = getPlanDetails(plan);
+
+    const users = loadUsers();
+    users[userId] = {
+        name,
+        telegram: username,
+        pendingPlan: plan,
+        orderId
+    };
+    saveUsers(users);
+
+    // ===== MESSAGE TO CLIENT =====
+    bot.sendMessage(userId,
+`✅ Order received
+
+Plan: ${plan.toUpperCase()}
+Duration: ${details.days}
+Price: $${details.price}
+
+You will be notified before your subscription expires.
+
+Please wait. Your access link will be sent shortly after payment verification.`
+    );
+
+    // ===== ADMIN MESSAGE =====
+    const opts = {
+        reply_markup:{
+            inline_keyboard:[
+                [
+                    {text:"Approve", callback_data:`approve_${userId}`},
+                    {text:"Reject", callback_data:`reject_${userId}`}
+                ]
+            ]
+        }
+    };
+
     bot.sendMessage(ADMIN_ID,
-`📥 NOVO PEDIDO
+`📥 New order processed
 
-Plano: ${plan}
-Usuário: @${username}
-Chat ID: ${chatId}`);
+Order ID: ${orderId}
+Plan: ${plan.toUpperCase()}
+Duration: ${details.days}
+Price: $${details.price}
+
+Telegram: @${username}
+User ID: ${userId}`,
+    opts);
 });
 
-// Porta do Render
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log("Servidor rodando na porta " + PORT);
+// ===== APPROVE / REJECT =====
+bot.on('callback_query', query=>{
+    const data = query.data;
+    const userId = parseInt(data.split("_")[1]);
+
+    const users = loadUsers();
+    if(!users[userId]) return;
+
+    const plan = users[userId].pendingPlan;
+
+    if(data.startsWith("approve")){
+        const expire = getExpireDate(plan);
+
+        users[userId].plan = plan;
+        users[userId].expires = expire;
+        delete users[userId].pendingPlan;
+
+        saveUsers(users);
+
+        bot.sendMessage(userId,
+`🎉 Payment confirmed!
+
+Plan: ${plan.toUpperCase()}
+
+Here is your VIP access:
+${VIP_LINK}
+
+Thank you for your purchase!`
+        );
+
+        bot.answerCallbackQuery(query.id,{text:"Approved"});
+    }
+
+    if(data.startsWith("reject")){
+        delete users[userId].pendingPlan;
+        saveUsers(users);
+
+        bot.sendMessage(userId,
+`❌ Payment rejected.
+
+The access link will not be sent.
+
+If you believe this is a mistake, please contact support:
+@wachazzin`
+        );
+
+        bot.answerCallbackQuery(query.id,{text:"Rejected"});
+    }
 });

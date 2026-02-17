@@ -1,22 +1,18 @@
+require('dotenv').config(); // lê variáveis do .env
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
+const path = require('path');
 const express = require('express');
 
-// ===== CONFIG =====
+// ===== CONFIG VIA .ENV =====
 const TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
-const VIP_LINK = process.env.VIP_LINK;
+const VIP_LINK = process.env.VIP_LINK || 'https://t.me/+me0ODDBwdas4NmU1';
+const USERS_FILE = path.join(__dirname, 'users.json');
 
-const USERS_FILE = './users.json';
-
-// ===== INIT =====
-const bot = new TelegramBot(TOKEN, { polling: true });
-console.log("Bot running...");
-
-// ===== WEB SERVER (Render requirement) =====
-const app = express();
-app.get("/", (req, res) => res.send("Bot is running"));
-app.listen(process.env.PORT || 3000);
+// ===== INIT BOT =====
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+console.log('Bot running...');
 
 // ===== HELPERS =====
 function loadUsers() {
@@ -28,144 +24,146 @@ function saveUsers(data) {
     fs.writeFileSync(USERS_FILE, JSON.stringify(data, null, 2));
 }
 
-function getPlanInfo(plan) {
-    plan = plan.toLowerCase();
-
-    if (plan === "basic") {
-        return { duration: "7 days", price: "$65" };
-    }
-    if (plan === "premium") {
-        return { duration: "30 days", price: "$90" };
-    }
-    if (plan === "elite") {
-        return { duration: "Lifetime", price: "$120" };
-    }
-    return { duration: "Unknown", price: "$0" };
+function getExpire(plan) {
+    const now = new Date();
+    if(plan === 'basic') now.setDate(now.getDate()+7);
+    if(plan === 'premium') now.setDate(now.getDate()+30);
+    if(plan === 'elite') return 'lifetime';
+    return now.toISOString();
 }
 
 function generateOrderId() {
-    return Math.floor(100000 + Math.random() * 900000);
+    return Math.random().toString(36).substr(2, 9);
 }
 
-// ===== START FROM WEBSITE =====
-bot.onText(/\/start (.+)/, (msg, match) => {
-    const payload = match[1]; // PLAN_username
-    const [planRaw, username] = payload.split("_");
+// ===== START / PAYMENTS =====
+bot.onText(/\/start(?: (.+))?/, (msg, match) => {
+    const chatId = msg.chat.id;
+    const payload = match[1]; // opcional
 
-    const userId = msg.chat.id;
-    const plan = planRaw.toLowerCase();
-    const planInfo = getPlanInfo(plan);
-    const orderId = generateOrderId();
-
-    const users = loadUsers();
-
-    users[userId] = {
-        plan,
-        username,
-        duration: planInfo.duration,
-        price: planInfo.price,
-        orderId,
-        status: "waiting_proof"
-    };
-
-    saveUsers(users);
-
-    // Message to customer
-    bot.sendMessage(userId,
-`Order received ✅
-
-Plan: ${plan.toUpperCase()}
-Duration: ${planInfo.duration}
-Price: ${planInfo.price}
-
-Please send your payment screenshot here.
-
-You will be notified when your subscription is approved.`
-    );
-});
-
-// ===== RECEIVE SCREENSHOT =====
-bot.on('photo', async (msg) => {
-    const userId = msg.chat.id;
-    const users = loadUsers();
-
-    if (!users[userId] || users[userId].status !== "waiting_proof") {
+    if(!payload){
+        bot.sendMessage(chatId, "Welcome! Start your order from the website.");
         return;
     }
 
-    const user = users[userId];
-    user.status = "pending_admin";
+    const [plan, username] = payload.split("_");
+    const users = loadUsers();
+    if(!users[chatId]) users[chatId] = {};
+
+    const orderId = generateOrderId();
+    users[chatId].pendingPlan = plan.toLowerCase();
+    users[chatId].username = username;
+    users[chatId].orderId = orderId;
     saveUsers(users);
 
-    const fileId = msg.photo[msg.photo.length - 1].file_id;
+    // Mensagem para o usuário
+    bot.sendMessage(chatId,
+`✅ Order received
+Plan: ${plan.charAt(0).toUpperCase() + plan.slice(1)}
+Price: ${
+  plan.toLowerCase() === 'basic' ? '$65' :
+  plan.toLowerCase() === 'premium' ? '$135' :
+  '$180'
+}
+Duration: ${
+  plan.toLowerCase() === 'basic' ? '7 days' :
+  plan.toLowerCase() === 'premium' ? '30 days' :
+  'Lifetime'
+}
 
-    const adminText =
-`🆕 New order processed
+You will be notified near the end of your subscription.
+Please send your payment screenshot here.`
+    );
 
-Plan: ${user.plan.toUpperCase()}
-Duration: ${user.duration}
-Price: ${user.price}
-Username: @${user.username}
-User ID: ${userId}
-Order ID: ${user.orderId}`;
-
+    // Mensagem para o admin
     const opts = {
         reply_markup: {
             inline_keyboard: [
                 [
-                    { text: "Approve", callback_data: `approve_${userId}` },
-                    { text: "Reject", callback_data: `reject_${userId}` }
+                    { text: "Approve ✅", callback_data: `approve_${chatId}` },
+                    { text: "Reject ❌", callback_data: `reject_${chatId}` }
                 ]
             ]
         }
     };
 
-    // Send photo to admin
-    bot.sendPhoto(ADMIN_ID, fileId, { caption: adminText, ...opts });
+    bot.sendMessage(
+        ADMIN_ID,
+        `🆕 New order processed
+Plan: ${plan.charAt(0).toUpperCase() + plan.slice(1)}
+Username: ${username}
+Order ID: ${orderId}
+Price: ${
+          plan.toLowerCase() === 'basic' ? '$65' :
+          plan.toLowerCase() === 'premium' ? '$135' :
+          '$180'
+        }`,
+        opts
+    );
+});
 
-    bot.sendMessage(userId, "Screenshot received. Waiting for admin approval.");
+// ===== UPLOAD DE FOTO =====
+bot.on('photo', msg => {
+    const chatId = msg.chat.id;
+    const users = loadUsers();
+    if(!users[chatId] || !users[chatId].pendingPlan) return;
+
+    const fileId = msg.photo[msg.photo.length-1].file_id;
+    bot.downloadFile(fileId, './uploads').then(filePath => {
+        users[chatId].paymentProof = filePath;
+        saveUsers(users);
+
+        bot.sendMessage(chatId, "📸 Payment screenshot received. Waiting for admin approval.");
+        bot.sendMessage(ADMIN_ID, `📸 Payment screenshot received for Order ID: ${users[chatId].orderId}`);
+    }).catch(err=>{
+        console.error(err);
+        bot.sendMessage(chatId, "❌ Error uploading screenshot. Try again.");
+    });
 });
 
 // ===== APPROVE / REJECT =====
-bot.on('callback_query', (query) => {
+bot.on('callback_query', query => {
     const data = query.data;
-    const userId = parseInt(data.split("_")[1]);
-
+    const chatId = parseInt(data.split('_')[1]);
     const users = loadUsers();
-    if (!users[userId]) return;
+    if(!users[chatId]) return;
 
-    const user = users[userId];
-
-    if (data.startsWith("approve")) {
-        user.status = "approved";
+    if(data.startsWith('approve')) {
+        const plan = users[chatId].pendingPlan;
+        const expire = getExpire(plan);
+        users[chatId].plan = plan;
+        users[chatId].expires = expire;
+        delete users[chatId].pendingPlan;
         saveUsers(users);
 
-        bot.sendMessage(userId,
-`🎉 Payment confirmed!
-
-Plan: ${user.plan.toUpperCase()}
-Duration: ${user.duration}
-
-Join VIP:
-${VIP_LINK}`
-        );
-
+        bot.sendMessage(chatId, `🎉 Payment confirmed!\nYour plan: ${plan.charAt(0).toUpperCase()+plan.slice(1)}\nJoin VIP here: ${VIP_LINK}`);
         bot.answerCallbackQuery(query.id, { text: "Approved" });
-    }
 
-    if (data.startsWith("reject")) {
-        user.status = "rejected";
+    } else if(data.startsWith('reject')) {
+        bot.sendMessage(chatId, "❌ Payment rejected. Please contact support @wachazzin.");
+        delete users[chatId].pendingPlan;
         saveUsers(users);
-
-        bot.sendMessage(userId,
-`❌ Payment rejected.
-
-The access link will not be sent.
-If you believe this is a mistake, contact support:
-@wachazzin`
-        );
-
         bot.answerCallbackQuery(query.id, { text: "Rejected" });
     }
 });
 
+// ===== STATS =====
+bot.onText(/\/stats/, msg => {
+    if(msg.chat.id !== ADMIN_ID) return;
+    const users = loadUsers();
+    let basic=0, premium=0, elite=0;
+    Object.values(users).forEach(u=>{
+        if(u.plan==='basic') basic++;
+        if(u.plan==='premium') premium++;
+        if(u.plan==='elite') elite++;
+    });
+    bot.sendMessage(ADMIN_ID, `📊 Subscribers:
+Basic: ${basic}
+Premium: ${premium}
+Elite: ${elite}`);
+});
+
+// ===== EXPRESS SERVER =====
+const app = express();
+app.get('/', (req, res) => res.send('Bot is running'));
+app.listen(process.env.PORT || 3000, () => console.log('Web server running'));

@@ -112,7 +112,7 @@ cron.schedule('0 12 * * *', () => {
             const diff = (exp-now)/(1000*60*60*24);
 
             if(diff <= 2 && diff > 1) {
-                bot.sendMessage(id, "⚠️ Your subscription expires soon.");
+                bot.sendMessage(id, " Your subscription expires soon.");
             }
 
             if(diff <= 0) {
@@ -135,6 +135,7 @@ app.get('/', (req, res) => {
 app.listen(3000, () => {
     console.log('Web server running');
 });
+
 
 
 

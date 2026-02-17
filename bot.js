@@ -3,7 +3,7 @@ const fs = require('fs');
 const cron = require('node-cron');
 
 // ===== CONFIG =====
-const TOKEN = '8534659329:AAFw8ksVcBwRI0ZW03CPlLwk33gj38RDVK8'; // Coloque seu token
+const TOKEN = '8534659329:AAEF5wNyWPs9PVh3s5B00MqW_jl3pDo2Lb8'; // Coloque seu token
 const ADMIN_ID = 8320256438; // Seu Telegram ID
 const VIP_LINK = 'https://t.me/+me0ODDBwdas4NmU1';
 const USERS_FILE = './users.json';
@@ -146,4 +146,5 @@ app.get('/', (req, res) => {
 app.listen(3000, () => {
     console.log('Web server running');
 });
+
 

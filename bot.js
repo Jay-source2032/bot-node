@@ -35,10 +35,10 @@ function getPlanInfo(plan) {
         return { duration: "7 days", price: "$65" };
     }
     if (plan === "premium") {
-        return { duration: "30 days", price: "$135" };
+        return { duration: "30 days", price: "$90" };
     }
     if (plan === "elite") {
-        return { duration: "Lifetime", price: "$180" };
+        return { duration: "Lifetime", price: "$120" };
     }
     return { duration: "Unknown", price: "$0" };
 }
@@ -168,3 +168,4 @@ If you believe this is a mistake, contact support:
         bot.answerCallbackQuery(query.id, { text: "Rejected" });
     }
 });
+

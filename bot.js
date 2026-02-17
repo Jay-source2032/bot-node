@@ -2,7 +2,6 @@
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const fs = require('fs');
-const multer = require('multer');
 const cron = require('node-cron');
 
 // ===== CONFIG =====
@@ -55,88 +54,48 @@ bot.onText(/\/start (.+)/, (msg, match) => {
   const payload = match[1]; // ex: "PREMIUM_username"
   const [planRaw, telegramRaw] = payload.split("_");
   const plan = planRaw.toLowerCase();
-  const telegram = telegramRaw.replace('@','');
+  const telegram = telegramRaw.replace('@',''); // Username sem @
   const userId = msg.chat.id;
   const name = msg.from.first_name;
 
   const users = loadUsers();
-  if(!users[userId]) users[userId] = {};
+  if(!users[telegram]) users[telegram] = {};
 
-  users[userId] = {
-    ...users[userId],
+  users[telegram] = {
+    ...users[telegram],
     pendingPlan: plan,
     telegram,
-    name
+    name,
+    telegramId: userId
   };
 
   // Generate orderId
   const orderId = Math.floor(Math.random()*1000000);
-  users[userId].orderId = orderId;
+  users[telegram].orderId = orderId;
   saveUsers(users);
 
   // ===== MESSAGE TO ADMIN =====
-  const opts = {
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: "Approve ✅", callback_data: `approve_${telegram}` },
-          { text: "Reject ❌", callback_data: `reject_${telegram}` }
-        ]
-      ]
-    }
-  };
-
   let price = plan==='basic'?65:plan==='premium'?120:200;
   let days = plan==='basic'?7:plan==='premium'?30:'lifetime';
 
   bot.sendMessage(ADMIN_ID,
-    `🆕 New order processed\nPlan: ${plan.toUpperCase()}\nUsername: @${telegram}\nOrder ID: ${orderId}\nPrice: $${price}\nDuration: ${days} days`,
-    opts
+    `🆕 Order sent\nPlan: ${plan.toUpperCase()}\nUsername: @${telegram}\nOrder ID: ${orderId}\nPrice: $${price}\nDuration: ${days} days`
   );
 
   // ===== MESSAGE TO CLIENT =====
   bot.sendMessage(userId,
-    `✅ Order received!\nPlan: ${plan.toUpperCase()}\nDuration: ${days} days\nPrice: $${price}\n\n📌 Click below and upload your payment proof to get the VIP link.`
+    `✅ Order received!\nPlan: ${plan.toUpperCase()}\nDuration: ${days} days\nPrice: $${price}\n\n📌 Please upload your payment proof to get the VIP link.`
   );
-});
-
-// ===== CALLBACK APPROVE / REJECT =====
-bot.on('callback_query', query => {
-  const data = query.data;
-  const telegram = data.split('_')[1];
-
-  const users = loadUsers();
-  const userEntry = Object.entries(users).find(([_, u]) => u.telegram === telegram);
-  if(!userEntry) return bot.answerCallbackQuery(query.id,{ text:"User not found" });
-
-  const [userId, user] = userEntry;
-
-  if(data.startsWith('approve')) {
-    const plan = user.pendingPlan;
-    const expire = getExpire(plan);
-
-    user.plan = plan;
-    user.expires = expire;
-    delete user.pendingPlan;
-    saveUsers(users);
-
-    bot.sendMessage(userId, `🎉 Payment confirmed!\nPlan: ${plan.toUpperCase()}\nJoin VIP here: ${VIP_LINK}`);
-    bot.answerCallbackQuery(query.id, { text: "Approved" });
-
-  } else if(data.startsWith('reject')) {
-    bot.sendMessage(userId, `❌ Payment rejected. Contact support in case of error: @wachazzin`);
-    delete user.pendingPlan;
-    saveUsers(users);
-    bot.answerCallbackQuery(query.id, { text: "Rejected" });
-  }
 });
 
 // ===== UPLOAD PAYMENT PROOF =====
 bot.on('message', msg => {
   const userId = msg.chat.id;
   const users = loadUsers();
-  const user = users[userId];
-  if(!user) return;
+  const userEntry = Object.entries(users).find(([_, u]) => u.telegramId === userId);
+  if(!userEntry) return; // usuário não encontrado
+
+  const [telegram, user] = userEntry;
 
   if(msg.photo) {
     const fileId = msg.photo[msg.photo.length-1].file_id;
@@ -150,10 +109,43 @@ bot.on('message', msg => {
 
       // notify admin
       bot.sendMessage(ADMIN_ID,
-        `📸 Payment screenshot from @${user.telegram}\nOrder ID: ${user.orderId}\nPlan: ${user.pendingPlan || user.plan}\nPrice: ${user.pendingPlan==='basic'?65:user.pendingPlan==='premium'?120:200}\nProof link: ${link}`
+        `📸 Payment screenshot received\nPlan: ${user.pendingPlan || user.plan}\nUsername: @${telegram}\nOrder ID: ${user.orderId}\nPrice: ${user.pendingPlan==='basic'?65:user.pendingPlan==='premium'?120:200}\nProof link: ${link}`
       );
     });
   }
+});
+
+// ===== APPROVE / REJECT COMMANDS =====
+bot.onText(/\/approve (.+)/, msg => {
+  if(msg.chat.id != ADMIN_ID) return;
+  const telegram = msg.text.split(' ')[1].replace('@','');
+  const users = loadUsers();
+  const user = users[telegram];
+  if(!user) return bot.sendMessage(ADMIN_ID,"User not found");
+
+  const plan = user.pendingPlan;
+  const expire = getExpire(plan);
+
+  user.plan = plan;
+  user.expires = expire;
+  delete user.pendingPlan;
+  saveUsers(users);
+
+  bot.sendMessage(user.telegramId, `🎉 Payment confirmed!\nPlan: ${plan.toUpperCase()}\nJoin VIP here: ${VIP_LINK}`);
+  bot.sendMessage(ADMIN_ID, `✅ Approved @${telegram} for plan ${plan.toUpperCase()}`);
+});
+
+bot.onText(/\/reject (.+)/, msg => {
+  if(msg.chat.id != ADMIN_ID) return;
+  const telegram = msg.text.split(' ')[1].replace('@','');
+  const users = loadUsers();
+  const user = users[telegram];
+  if(!user) return bot.sendMessage(ADMIN_ID,"User not found");
+
+  bot.sendMessage(user.telegramId, `❌ Payment rejected. Contact support in case of error: @wachazzin`);
+  delete user.pendingPlan;
+  saveUsers(users);
+  bot.sendMessage(ADMIN_ID, `❌ Rejected @${telegram}`);
 });
 
 // ===== STATS =====
@@ -176,17 +168,17 @@ cron.schedule('0 12 * * *', () => {
   const users = loadUsers();
   const now = new Date();
 
-  Object.keys(users).forEach(id=>{
-    const user = users[id];
+  Object.keys(users).forEach(telegram=>{
+    const user = users[telegram];
     if(user.expires && user.expires!=='lifetime') {
       const exp = new Date(user.expires);
       const diff = (exp-now)/(1000*60*60*24);
 
       if(diff <= 2 && diff > 1) {
-        bot.sendMessage(id, "⚠️ Your subscription expires soon.");
+        bot.sendMessage(user.telegramId, "⚠️ Your subscription expires soon.");
       }
       if(diff <=0){
-        bot.sendMessage(id, "⏰ Your subscription expired. Please renew.");
+        bot.sendMessage(user.telegramId, "⏰ Your subscription expired. Please renew.");
         delete user.plan;
         delete user.expires;
       }

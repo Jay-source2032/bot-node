@@ -41,61 +41,96 @@ function getExpire(plan) {
 
 // ===== WEBHOOK SETUP =====
 bot.setWebHook(`${process.env.RENDER_EXTERNAL_URL}/${TOKEN}`);
-
 app.post(`/${TOKEN}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
 });
 
 // ===== BOT LOGIC =====
-
-// ===== START COMMAND =====
 bot.onText(/\/start (.+)/, (msg, match) => {
   const payload = match[1]; // ex: "PREMIUM_username"
   const [planRaw, telegramRaw] = payload.split("_");
   const plan = planRaw.toLowerCase();
-  const telegram = telegramRaw.replace('@',''); // Username sem @
+  const telegram = telegramRaw.replace('@',''); 
   const userId = msg.chat.id;
   const name = msg.from.first_name;
 
   const users = loadUsers();
   if(!users[telegram]) users[telegram] = {};
 
-  users[telegram] = {
-    ...users[telegram],
-    pendingPlan: plan,
-    telegram,
-    name,
-    telegramId: userId
-  };
-
-  // Generate orderId
+  // store pending order
   const orderId = Math.floor(Math.random()*1000000);
-  users[telegram].orderId = orderId;
+  users[telegram] = {
+    telegramId: userId,
+    name,
+    telegram,
+    pendingPlan: plan,
+    orderId
+  };
   saveUsers(users);
 
-  // ===== MESSAGE TO ADMIN =====
+  // ===== MESSAGE TO CLIENT =====
   let price = plan==='basic'?65:plan==='premium'?120:200;
   let days = plan==='basic'?7:plan==='premium'?30:'lifetime';
 
-  bot.sendMessage(ADMIN_ID,
-    `🆕 Order received\nPlan: ${plan.toUpperCase()}\nUsername: @${telegram}\nOrder ID: ${orderId}\nPrice: $${price}\nDuration: ${days} days`
+  bot.sendMessage(userId,
+    `✅ Order sent!\nPlan: ${plan.toUpperCase()}\nDuration: ${days} days\nPrice: $${price}\n\n📌 Please send your payment proof here in the chat to receive the VIP link.`
   );
 
-  // ===== MESSAGE TO CLIENT =====
-  bot.sendMessage(userId,
-    `✅ Order sent!\nPlan: ${plan.toUpperCase()}\nDuration: ${days} days\nPrice: $${price}\n\n📌 Please upload your payment proof to get the VIP link.`
+  // ===== MESSAGE TO ADMIN =====
+  bot.sendMessage(ADMIN_ID,
+    `🆕 Order received\nPlan: ${plan.toUpperCase()}\nUsername: @${telegram}\nOrder ID: ${orderId}\nPrice: $${price}\nDuration: ${days} days`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "Approve ✅", callback_data: `approve_${telegram}` },
+            { text: "Reject ❌", callback_data: `reject_${telegram}` }
+          ]
+        ]
+      }
+    }
   );
 });
 
-// ===== UPLOAD PAYMENT PROOF =====
+// ===== CALLBACKS INLINE (APPROVE / REJECT) =====
+bot.on('callback_query', async query => {
+  const data = query.data;
+  const telegram = data.split('_')[1];
+  const users = loadUsers();
+  const user = users[telegram];
+  if(!user) return bot.answerCallbackQuery(query.id,{text:"User not found"});
+
+  if(data.startsWith('approve')) {
+    const plan = user.pendingPlan;
+    const expire = getExpire(plan);
+    user.plan = plan;
+    user.expires = expire;
+    delete user.pendingPlan;
+    saveUsers(users);
+
+    bot.sendMessage(user.telegramId, `🎉 Payment confirmed!\nPlan: ${plan.toUpperCase()}\nJoin VIP here: ${VIP_LINK}`);
+    bot.answerCallbackQuery(query.id,{text:"Approved"});
+
+    bot.sendMessage(ADMIN_ID, `✅ Approved @${telegram} for plan ${plan.toUpperCase()}`);
+  } else if(data.startsWith('reject')) {
+    bot.sendMessage(user.telegramId, `❌ Payment rejected. Contact support if needed: @wachazzin`);
+    delete user.pendingPlan;
+    saveUsers(users);
+    bot.answerCallbackQuery(query.id,{text:"Rejected"});
+
+    bot.sendMessage(ADMIN_ID, `❌ Rejected @${telegram}`);
+  }
+});
+
+// ===== RECEIVE PAYMENT PROOF =====
 bot.on('message', msg => {
   const userId = msg.chat.id;
   const users = loadUsers();
-  const userEntry = Object.entries(users).find(([_, u]) => u.telegramId === userId);
-  if(!userEntry) return; // usuário não encontrado
+  const entry = Object.entries(users).find(([_, u])=>u.telegramId === userId);
+  if(!entry) return;
 
-  const [telegram, user] = userEntry;
+  const [telegram, user] = entry;
 
   if(msg.photo) {
     const fileId = msg.photo[msg.photo.length-1].file_id;
@@ -104,48 +139,13 @@ bot.on('message', msg => {
       user.proofs.push(link);
       saveUsers(users);
 
-      // notify user
       bot.sendMessage(userId, `📎 Screenshot received! Admin will verify and approve your order soon.`);
 
-      // notify admin
       bot.sendMessage(ADMIN_ID,
-        `📸 Payment screenshot received\nPlan: ${user.pendingPlan || user.plan}\nUsername: @${telegram}\nOrder ID: ${user.orderId}\nPrice: ${user.pendingPlan==='basic'?65:user.pendingPlan==='premium'?120:200}\nProof link: ${link}`
+        `📸 Payment screenshot received\nPlan: ${user.pendingPlan || user.plan}\nUsername: @${telegram}\nOrder ID: ${user.orderId}\nProof link: ${link}`
       );
     });
   }
-});
-
-// ===== APPROVE / REJECT COMMANDS =====
-bot.onText(/\/approve (.+)/, msg => {
-  if(msg.chat.id != ADMIN_ID) return;
-  const telegram = msg.text.split(' ')[1].replace('@','');
-  const users = loadUsers();
-  const user = users[telegram];
-  if(!user) return bot.sendMessage(ADMIN_ID,"User not found");
-
-  const plan = user.pendingPlan;
-  const expire = getExpire(plan);
-
-  user.plan = plan;
-  user.expires = expire;
-  delete user.pendingPlan;
-  saveUsers(users);
-
-  bot.sendMessage(user.telegramId, `🎉 Payment confirmed!\nPlan: ${plan.toUpperCase()}\nJoin VIP here: ${VIP_LINK}`);
-  bot.sendMessage(ADMIN_ID, `✅ Approved @${telegram} for plan ${plan.toUpperCase()}`);
-});
-
-bot.onText(/\/reject (.+)/, msg => {
-  if(msg.chat.id != ADMIN_ID) return;
-  const telegram = msg.text.split(' ')[1].replace('@','');
-  const users = loadUsers();
-  const user = users[telegram];
-  if(!user) return bot.sendMessage(ADMIN_ID,"User not found");
-
-  bot.sendMessage(user.telegramId, `❌ Payment rejected. Contact support in case of error: @wachazzin`);
-  delete user.pendingPlan;
-  saveUsers(users);
-  bot.sendMessage(ADMIN_ID, `❌ Rejected @${telegram}`);
 });
 
 // ===== STATS =====
@@ -191,4 +191,3 @@ cron.schedule('0 12 * * *', () => {
 // ===== START WEB SERVER =====
 app.get('/', (req,res)=>res.send('Bot is running'));
 app.listen(PORT, ()=>console.log('Web server running'));
-

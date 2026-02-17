@@ -1,6 +1,10 @@
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const cron = require('node-cron');
+const express = require('express');
+const multer = require('multer');
+const upload = multer({ dest: 'uploads/' });
+const app = express();
 
 // ===== CONFIG =====
 const TOKEN = '8534659329:AAEF5wNyWPs9PVh3s5B00MqW_jl3pDo2Lb8'; // Coloque seu token
@@ -25,36 +29,77 @@ function saveUsers(data) {
 function getExpire(plan) {
     const now = new Date();
     if(plan === 'basic') now.setDate(now.getDate()+7);
-    if(plan === 'premium') now.setDate(now.getDate()+30);
-    if(plan === 'elite') return 'lifetime';
+    else if(plan === 'premium') now.setDate(now.getDate()+30);
+    else if(plan === 'elite') return 'lifetime';
     return now.toISOString();
 }
 
-bot.onText(/\/start(?: (.+))?/, (msg, match) => {
+// ===== RECEBENDO CLIENTE DO SITE (/upload) =====
+app.post('/upload', upload.single('proof'), async (req,res)=>{
+    try{
+        const { telegram, plan, notes } = req.body;
+        const file = req.file;
+
+        if(!telegram || !plan || !file){
+            return res.json({ success:false, message:"Missing data or file." });
+        }
+
+        // salva usuário em pending
+        const users = loadUsers();
+        const userId = telegram; // usamos username como chave temporária
+        if(!users[userId]) users[userId] = {};
+        users[userId].pendingPlan = plan.toLowerCase();
+        users[userId].telegram = telegram;
+        saveUsers(users);
+
+        // envia mensagem e arquivo para admin
+        await bot.sendMessage(ADMIN_ID, `🆕 New payment\nTelegram: @${telegram}\nPlan: ${plan}\nNotes: ${notes||"none"}\nUse /approve_${userId} or /reject_${userId}`);
+        await bot.sendDocument(ADMIN_ID, file.path, {}, { filename:file.originalname });
+
+        fs.unlinkSync(file.path); // remove arquivo temporário
+
+        res.json({ success:true });
+    }catch(err){
+        console.error(err);
+        res.json({ success:false, message:err.message });
+    }
+});
+
+// ===== RECEBENDO CLIENTE DO BOT (/start) =====
+bot.onText(/\/start (.+)/, (msg, match) => {
+    const payload = match[1];             // ex: "PREMIUM_username"
+    const [plan, telegram] = payload.split("_");
     const userId = msg.chat.id;
     const name = msg.from.first_name;
-
-    const payload = match[1]; // pode ser undefined
-    const plan = payload ? payload.split("_")[0].toLowerCase() : "basic"; // default
-    const telegram = payload ? payload.split("_")[1] : "";
 
     const users = loadUsers();
     if(!users[userId]) users[userId] = {};
 
-    users[userId].pendingPlan = plan;
+    users[userId].pendingPlan = plan.toLowerCase();
     users[userId].telegram = telegram;
-
     saveUsers(users);
 
-    // Enviar notificação para admin
-    bot.sendMessage(ADMIN_ID, `🆕 New customer\nName: ${name}\nID: ${userId}\nPlan: ${plan}\nTelegram: ${telegram}`);
+    const opts = {
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    { text: "Approve", callback_data: `approve_${userId}` },
+                    { text: "Reject", callback_data: `reject_${userId}` }
+                ]
+            ]
+        }
+    };
 
-    // Mensagem para o usuário
+    bot.sendMessage(
+        ADMIN_ID,
+        `🆕 New customer\nName: ${name}\nID: ${userId}\nPlan: ${plan}\nTelegram: ${telegram}`,
+        opts
+    );
+
     bot.sendMessage(userId, "✅ Request received. Waiting for admin approval.");
 });
 
-
-// ===== APPROVE / REJECT =====
+// ===== APPROVE / REJECT INLINE =====
 bot.on('callback_query', query => {
     const data = query.data;
     const userId = parseInt(data.split('_')[1]);
@@ -107,15 +152,15 @@ cron.schedule('0 12 * * *', () => {
     Object.keys(users).forEach(id=>{
         const user = users[id];
 
-        if(user.expires && user.expires!=='lifetime') {
+        if(user.expires && user.expires!=='lifetime'){
             const exp = new Date(user.expires);
             const diff = (exp-now)/(1000*60*60*24);
 
-            if(diff <= 2 && diff > 1) {
-                bot.sendMessage(id, " Your subscription expires soon.");
+            if(diff <= 2 && diff > 1){
+                bot.sendMessage(id, "⚠️ Your subscription expires soon.");
             }
 
-            if(diff <= 0) {
+            if(diff <= 0){
                 bot.sendMessage(id, "⏰ Your subscription expired. Please renew.");
                 delete users[id].plan;
                 delete users[id].expires;
@@ -125,17 +170,8 @@ cron.schedule('0 12 * * *', () => {
 
     saveUsers(users);
 });
-const express = require('express');
-const app = express();
 
-app.get('/', (req, res) => {
-    res.send('Bot is running');
-});
+// ===== EXPRESS TESTE =====
+app.get('/', (req,res)=>res.send('Bot is running'));
 
-app.listen(3000, () => {
-    console.log('Web server running');
-});
-
-
-
-
+app.listen(3000, ()=>console.log('Web server running on port 3000'));

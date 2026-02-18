@@ -18,7 +18,7 @@ if (!TOKEN || !ADMIN_ID || !VIP_LINK) {
 const bot = new TelegramBot(TOKEN);
 const app = express();
 app.use(express.json());
-app.use(express.static('public')); // Para servir admin.html e outros arquivos
+app.use(express.static('public')); // Serve admin.html
 
 // ===== USERS STORAGE =====
 function loadUsers() {
@@ -66,12 +66,13 @@ bot.onText(/\/start (.+)/, (msg, match) => {
   users[userId].name = name;
   saveUsers(users);
 
-  // ===== ORDER ID =====
   const orderId = Math.floor(Math.random() * 1000000);
   users[userId].orderId = orderId;
   saveUsers(users);
 
   // ===== MENSAGEM PARA ADMIN =====
+  const price = plan === 'basic' ? 65 : plan === 'premium' ? 120 : 200;
+  const days = plan === 'basic' ? 7 : plan === 'premium' ? 30 : 'lifetime';
   const opts = {
     reply_markup: {
       inline_keyboard: [
@@ -85,17 +86,25 @@ bot.onText(/\/start (.+)/, (msg, match) => {
 
   bot.sendMessage(
     ADMIN_ID,
-    `🆕 Order received\nPlan: ${plan.toUpperCase()}\nUsername: ${telegram}\nOrder ID: ${orderId}`,
-    opts
+    `🆕 **Order Received**\n\n` +
+    `**Plan:** ${plan.toUpperCase()}\n` +
+    `**Duration:** ${days} days\n` +
+    `**Price:** $${price}\n` +
+    `**Username:** ${telegram}\n` +
+    `**Order ID:** ${orderId}`,
+    { ...opts, parse_mode: "Markdown" }
   );
 
   // ===== MENSAGEM PARA CLIENTE =====
-  let price = plan === 'basic' ? 65 : plan === 'premium' ? 120 : 200;
-  let days = plan === 'basic' ? 7 : plan === 'premium' ? 30 : 'lifetime';
-
   bot.sendMessage(
     userId,
-    `✅ Order sent!\nPlan: ${plan.toUpperCase()}\nDuration: ${days} days\nPrice: $${price}\nClick below and upload the payment proof to get the VIP link.`
+    `✨ **Order Sent**\n\n` +
+    `**Plan:** ${plan.toUpperCase()}\n` +
+    `**Duration:** ${days} days\n` +
+    `**Price:** $${price}\n\n` +
+    `💌 Please send a screenshot of your payment as proof.\n` +
+    `Click below to upload your screenshot, and the VIP link will be sent as soon as we verify it!`,
+    { reply_markup: { force_reply: true }, parse_mode: "Markdown" }
   );
 });
 
@@ -117,7 +126,7 @@ bot.on('callback_query', async query => {
     delete user.pendingPlan;
     saveUsers(users);
 
-    bot.sendMessage(userId, `🎉 Payment confirmed!\nPlan: ${plan.toUpperCase()}\nJoin VIP here: ${VIP_LINK}`);
+    bot.sendMessage(userId, `🎉 Payment confirmed!\n**Plan:** ${plan.toUpperCase()}\nJoin VIP here: ${VIP_LINK}`, { parse_mode: "Markdown" });
     bot.answerCallbackQuery(query.id, { text: "Approved" });
 
   } else if(data.startsWith('reject')) {
@@ -136,8 +145,11 @@ bot.on('message', msg => {
 
   if(msg.photo){
     const fileId = msg.photo[msg.photo.length-1].file_id;
+
+    // Envia direto como imagem para admin
     bot.sendPhoto(ADMIN_ID, fileId, { caption: `📸 Payment proof from ${users[userId].telegram}\nOrder ID: ${users[userId].orderId}` });
-    bot.sendMessage(userId, "📎 Screenshot received! Admin will verify and approve your order soon.");
+
+    bot.sendMessage(userId, "✅ Screenshot received! Admin will verify your order and send the VIP link soon. Thank you 💖");
   }
 });
 
@@ -173,7 +185,7 @@ app.get('/admin/approve/:id', (req,res)=>{
     user.expires = expire;
     delete user.pendingPlan;
     saveUsers(users);
-    bot.sendMessage(id, `🎉 Payment confirmed!\nPlan: ${plan.toUpperCase()}\nJoin VIP here: ${VIP_LINK}`);
+    bot.sendMessage(id, `🎉 Payment confirmed!\n**Plan:** ${plan.toUpperCase()}\nJoin VIP here: ${VIP_LINK}`, { parse_mode: "Markdown" });
   }
   res.sendStatus(200);
 });

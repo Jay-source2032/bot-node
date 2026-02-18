@@ -1,14 +1,15 @@
-// ===== IMPORTS =====
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
+const fs = require('fs');
+const cron = require('node-cron');
 
 // ===== ENV =====
 const TOKEN = process.env.BOT_TOKEN;
-const ADMIN_ID = process.env.ADMIN_ID;
+const ADMIN_ID = Number(process.env.ADMIN_ID);
 const VIP_LINK = process.env.VIP_LINK;
-const WEBHOOK_URL = process.env.RENDER_EXTERNAL_URL;
+const URL = process.env.RENDER_EXTERNAL_URL;
 
-if (!TOKEN || !ADMIN_ID || !VIP_LINK || !WEBHOOK_URL) {
+if (!TOKEN || !ADMIN_ID || !VIP_LINK || !URL) {
   console.log("Missing ENV variables");
   process.exit(1);
 }
@@ -18,204 +19,222 @@ const bot = new TelegramBot(TOKEN);
 const app = express();
 app.use(express.json());
 
-// ===== MEMORY STORAGE =====
-// (Simples e estável. Depois pode trocar por database se quiser)
-let users = {};
-let stats = {
-  total: 0,
-  basic: 0,
-  premium: 0,
-  elite: 0
-};
+bot.setWebHook(`${URL}/bot${TOKEN}`);
 
-// ===== WEBHOOK =====
-bot.setWebHook(`${WEBHOOK_URL}/${TOKEN}`);
-
-app.post(`/${TOKEN}`, (req, res) => {
+app.post(`/bot${TOKEN}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
 });
 
-app.get('/', (req, res) => {
-  res.send("Bot running");
-});
+app.get('/', (req,res)=>res.send("Bot running"));
+app.listen(process.env.PORT || 3000);
 
-// ===== START COMMAND =====
-bot.onText(/\/start(?: (.+))?/, (msg, match) => {
+// ===== STORAGE =====
+const FILE = './users.json';
+
+function loadUsers() {
+  if (!fs.existsSync(FILE)) return {};
+  return JSON.parse(fs.readFileSync(FILE));
+}
+
+function saveUsers(data) {
+  fs.writeFileSync(FILE, JSON.stringify(data, null, 2));
+}
+
+let users = loadUsers();
+
+// ===== PLANS =====
+function getPlan(plan){
+  if(plan==="basic") return {price:65, days:7};
+  if(plan==="premium") return {price:120, days:30};
+  if(plan==="elite") return {price:200, days:9999};
+  return null;
+}
+
+// ===== START =====
+bot.onText(/\/start (.+)/, (msg, match)=>{
   const chatId = msg.chat.id;
   const name = msg.from.first_name;
-  const username = msg.from.username || name;
+  const payload = match[1];
 
-  let plan = null;
-  let providedUsername = username;
+  const [planRaw, usernameRaw] = payload.split("_");
+  const plan = planRaw.toLowerCase();
+  const username = usernameRaw.replace("@","");
 
-  if (match[1]) {
-    const parts = match[1].split("_");
-    plan = parts[0].toLowerCase();
-    if (parts[1]) providedUsername = parts[1].replace("@", "");
-  }
+  const planData = getPlan(plan);
+  if(!planData) return;
 
-  // Save user
-  if (!users[chatId]) {
-    users[chatId] = {
-      username: providedUsername,
-      name: name,
-      plan: null,
-      pendingPlan: null
-    };
-    stats.total++;
-  }
+  const orderId = Math.floor(Math.random()*1000000);
 
-  // If coming from payment page
-  if (plan) {
-    users[chatId].pendingPlan = plan;
+  users[chatId] = {
+    chatId,
+    username,
+    name,
+    pendingPlan: plan,
+    orderId,
+    created: new Date().toISOString()
+  };
 
-    const orderId = Math.floor(Math.random() * 1000000);
+  saveUsers(users);
 
-    const adminButtons = {
-      reply_markup: {
-        inline_keyboard: [[
-          { text: "Approve ✅", callback_data: `approve_${chatId}` },
-          { text: "Reject ❌", callback_data: `reject_${chatId}` }
-        ]]
-      }
-    };
+  // ===== CLIENT =====
+  bot.sendMessage(chatId,
+`✅ Order received
 
-    // ===== ADMIN MESSAGE =====
-    bot.sendMessage(
-      ADMIN_ID,
-      `📦 Order sent
-User: @${providedUsername}
-Name: ${name}
-Plan: ${plan.toUpperCase()}
-ChatID: ${chatId}
-OrderID: ${orderId}`,
-      adminButtons
-    );
-
-    // ===== CLIENT MESSAGE =====
-    bot.sendMessage(
-      chatId,
-      `✅ Order received!
+Order ID: ${orderId}
 
 Plan: ${plan.toUpperCase()}
+Duration: ${planData.days === 9999 ? "Lifetime" : planData.days + " days"}
+Price: $${planData.price}
 
-Next step:
+Username: @${username}
+
 Please send your payment screenshot here.
-
-After admin approval, you will receive your VIP link automatically.`
-    );
-  } else {
-    bot.sendMessage(chatId, "Welcome! Please use the payment page to start your order.");
-  }
-});
-
-// ===== RECEIVE PAYMENT IMAGE =====
-bot.on('photo', (msg) => {
-  const chatId = msg.chat.id;
-
-  if (!users[chatId]) return;
-
-  const fileId = msg.photo[msg.photo.length - 1].file_id;
-
-  bot.sendPhoto(
-    ADMIN_ID,
-    fileId,
-    {
-      caption: `📸 Payment proof received
-
-User: @${users[chatId].username}
-Name: ${users[chatId].name}
-ChatID: ${chatId}
-Plan: ${users[chatId].pendingPlan || "Unknown"}`
-    }
+After approval you will receive your VIP link automatically.`
   );
 
-  bot.sendMessage(chatId, "Screenshot received. Waiting for admin approval.");
+  // ===== ADMIN =====
+  bot.sendMessage(ADMIN_ID,
+`📦 Order sent
+
+Order ID: ${orderId}
+User: @${username}
+Name: ${name}
+ChatID: ${chatId}
+
+Plan: ${plan.toUpperCase()}
+Price: $${planData.price}`,
+{
+  reply_markup:{
+    inline_keyboard:[[
+      {text:"Approve ✅", callback_data:`approve_${chatId}`},
+      {text:"Reject ❌", callback_data:`reject_${chatId}`}
+    ]]
+  }
+});
 });
 
-// If user sends image as file
-bot.on('document', (msg) => {
+// ===== RECEIVE PHOTO =====
+bot.on('photo', msg=>{
   const chatId = msg.chat.id;
+  if(!users[chatId]) return;
 
-  if (!users[chatId]) return;
+  const fileId = msg.photo[msg.photo.length-1].file_id;
 
-  if (msg.document.mime_type && msg.document.mime_type.startsWith("image")) {
-    bot.sendDocument(
-      ADMIN_ID,
-      msg.document.file_id,
-      {
-        caption: `📎 Payment file received
+  bot.sendPhoto(ADMIN_ID, fileId, {
+    caption:`📸 Payment Proof
 
+Order ID: ${users[chatId].orderId}
 User: @${users[chatId].username}
-ChatID: ${chatId}`
-      }
-    );
+ChatID: ${chatId}
+Plan: ${users[chatId].pendingPlan}`
+  });
 
-    bot.sendMessage(chatId, "File received. Waiting for admin approval.");
-  }
+  bot.sendMessage(chatId,"Screenshot received. Waiting for admin approval.");
 });
 
 // ===== APPROVE / REJECT =====
-bot.on('callback_query', (query) => {
-  const data = query.data;
-  const chatId = parseInt(data.split("_")[1]);
+bot.on('callback_query', async q=>{
+  const data = q.data;
+  const chatId = Number(data.split("_")[1]);
 
-  if (!users[chatId]) {
-    bot.answerCallbackQuery(query.id, { text: "User not found" });
+  if(!users[chatId]){
+    bot.answerCallbackQuery(q.id,{text:"User not found"});
     return;
   }
 
-  const plan = users[chatId].pendingPlan;
+  const user = users[chatId];
 
-  if (data.startsWith("approve")) {
-    users[chatId].plan = plan;
-    users[chatId].pendingPlan = null;
+  if(data.startsWith("approve")){
+    const planData = getPlan(user.pendingPlan);
+    const expire = new Date();
+    expire.setDate(expire.getDate()+planData.days);
 
-    // stats
-    if (plan === "basic") stats.basic++;
-    if (plan === "premium") stats.premium++;
-    if (plan === "elite") stats.elite++;
+    user.plan = user.pendingPlan;
+    user.expires = planData.days===9999 ? "lifetime" : expire.toISOString();
+    delete user.pendingPlan;
 
-    bot.sendMessage(
-      chatId,
-      `🎉 Payment approved!
+    saveUsers(users);
 
-Here is your VIP access:
+    bot.sendMessage(chatId,
+`🎉 Payment confirmed!
+
+Plan: ${user.plan.toUpperCase()}
+
+Join VIP:
 ${VIP_LINK}`
     );
 
-    bot.answerCallbackQuery(query.id, { text: "Approved" });
+    bot.answerCallbackQuery(q.id,{text:"Approved"});
   }
 
-  if (data.startsWith("reject")) {
-    users[chatId].pendingPlan = null;
+  if(data.startsWith("reject")){
+    delete user.pendingPlan;
+    saveUsers(users);
 
-    bot.sendMessage(
-      chatId,
-      "❌ Payment rejected. Please contact support."
+    bot.sendMessage(chatId,
+"❌ Payment rejected.\nContact support: @wachazzin"
     );
 
-    bot.answerCallbackQuery(query.id, { text: "Rejected" });
+    bot.answerCallbackQuery(q.id,{text:"Rejected"});
   }
 });
 
-// ===== STATS =====
-bot.onText(/\/stats/, (msg) => {
-  if (msg.chat.id != ADMIN_ID) return;
+// ===== ADMIN COMMANDS =====
 
-  bot.sendMessage(
-    ADMIN_ID,
-    `📊 Stats
+// Stats
+bot.onText(/\/stats/, msg=>{
+  if(msg.chat.id!==ADMIN_ID) return;
 
-Total users: ${stats.total}
-Basic: ${stats.basic}
-Premium: ${stats.premium}
-Elite: ${stats.elite}`
+  let basic=0,premium=0,elite=0;
+
+  Object.values(users).forEach(u=>{
+    if(u.plan==="basic") basic++;
+    if(u.plan==="premium") premium++;
+    if(u.plan==="elite") elite++;
+  });
+
+  bot.sendMessage(ADMIN_ID,
+`📊 Subscribers
+
+Basic: ${basic}
+Premium: ${premium}
+Elite: ${elite}`
   );
 });
 
-// ===== SERVER =====
-app.listen(process.env.PORT || 3000, () => {
-  console.log("Server running");
+// List users
+bot.onText(/\/users/, msg=>{
+  if(msg.chat.id!==ADMIN_ID) return;
+
+  let text="Users:\n";
+  Object.values(users).slice(-20).forEach(u=>{
+    text += `@${u.username} | ${u.plan || "pending"} | ${u.chatId}\n`;
+  });
+
+  bot.sendMessage(ADMIN_ID,text);
+});
+
+// ===== EXPIRATION CHECK =====
+cron.schedule('0 12 * * *', ()=>{
+  const now = new Date();
+
+  Object.values(users).forEach(u=>{
+    if(u.expires && u.expires!=="lifetime"){
+      const exp = new Date(u.expires);
+      const diff = (exp-now)/(1000*60*60*24);
+
+      if(diff<=2 && diff>1){
+        bot.sendMessage(u.chatId,"Your subscription expires soon.");
+      }
+
+      if(diff<=0){
+        bot.sendMessage(u.chatId,"Subscription expired.");
+        delete u.plan;
+        delete u.expires;
+      }
+    }
+  });
+
+  saveUsers(users);
 });

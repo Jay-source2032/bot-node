@@ -106,7 +106,7 @@ bot.on('callback_query', async query => {
     delete user.pendingPlan;
     saveUsers(users);
 
-    bot.sendMessage(chatId, `🎉 Payment confirmed!\nPlan: ${plan.toUpperCase()}\nJoin VIP here: ${VIP_LINK}`);
+    bot.sendMessage(chatId, `Payment confirmed!\nPlan: ${plan.toUpperCase()}\nJoin VIP here: ${VIP_LINK}`);
     bot.answerCallbackQuery(query.id, { text: "Approved" });
 
   } else if(data.startsWith('reject')) {
@@ -136,7 +136,7 @@ bot.on('message', msg => {
   // Documento (imagem sem compressão)
   if(msg.document){
     const fileId = msg.document.file_id;
-    bot.sendDocument(ADMIN_ID, fileId, { caption: `📎 Payment document from @${users[chatId].username}\nOrder ID: ${users[chatId].orderId}` });
+    bot.sendDocument(ADMIN_ID, fileId, { caption: `Payment document from @${users[chatId].username}\nOrder ID: ${users[chatId].orderId}` });
     bot.sendMessage(chatId, `📎 Document received! Admin will verify your order soon.`);
   }
 });
@@ -188,3 +188,4 @@ bot.onText(/\/admin/, msg => {
 // ===== Web server =====
 app.get('/', (req,res) => res.send('Bot is running'));
 app.listen(process.env.PORT || 3000, () => console.log('Web server running'));
+

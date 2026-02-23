@@ -74,7 +74,7 @@ bot.onText(/\/start (.+)/, (msg, match) => {
 
   bot.sendMessage(
     ADMIN_ID,
-    `🆕 Order received\nPlan: ${plan.toUpperCase()}\nUsername: @${username}\nOrder ID: ${orderId}`,
+    ` Order received\nPlan: ${plan.toUpperCase()}\nUsername: @${username}\nOrder ID: ${orderId}`,
     opts
   );
 
@@ -84,7 +84,7 @@ bot.onText(/\/start (.+)/, (msg, match) => {
 
   bot.sendMessage(
     chatId,
-    `✅ Order sent!\nPlan: ${plan.toUpperCase()}\nDuration: ${days} days\nPrice: $${price}\n\n📎 Please send a screenshot of your payment here to get the VIP link.`
+    ` Order sent!\nPlan: ${plan.toUpperCase()}\nDuration: ${days} days\nPrice: $${price}\n\n📎 Please send a screenshot of your payment here to get the VIP link.`
   );
 });
 
@@ -188,4 +188,5 @@ bot.onText(/\/admin/, msg => {
 // ===== Web server =====
 app.get('/', (req,res) => res.send('Bot is running'));
 app.listen(process.env.PORT || 3000, () => console.log('Web server running'));
+
 
